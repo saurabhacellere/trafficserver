@@ -27,7 +27,6 @@
 #include "P_SSLUtils.h"
 #include "P_OCSPStapling.h"
 #include "P_SSLSNI.h"
-#include "SSLStats.h"
 
 //
 // Global Data
@@ -35,6 +34,7 @@
 
 SSLNetProcessor ssl_NetProcessor;
 NetProcessor &sslNetProcessor = ssl_NetProcessor;
+SNIActionPerformer sni_action_performer;
 
 #if TS_USE_TLS_OCSP
 struct OCSPContinuation : public Continuation {
@@ -77,8 +77,6 @@ SSLNetProcessor::start(int, size_t stacksize)
 
 #if TS_USE_TLS_OCSP
   if (SSLConfigParams::ssl_ocsp_enabled) {
-    // Call the update initially to get things populated
-    ocsp_update();
     EventType ET_OCSP = eventProcessor.spawn_event_threads("ET_OCSP", 1, stacksize);
     eventProcessor.schedule_every(new OCSPContinuation(), HRTIME_SECONDS(SSLConfigParams::ssl_ocsp_update_period), ET_OCSP);
   }
