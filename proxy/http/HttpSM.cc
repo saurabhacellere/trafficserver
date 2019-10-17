@@ -51,6 +51,10 @@
 #include <atomic>
 #include <logging/Log.h>
 
+#ifdef HAVE_SYSTEMTAP
+#include <sys/sdt.h>
+#endif
+
 #define DEFAULT_RESPONSE_BUFFER_SIZE_INDEX 6 // 8K
 #define DEFAULT_REQUEST_BUFFER_SIZE_INDEX 6  // 8K
 #define MIN_CONFIG_BUFFER_SIZE_INDEX 5       // 4K
@@ -372,9 +376,6 @@ HttpSM::init()
                        !(t_state.txn_conf->doc_in_cache_skip_dns) || !(t_state.txn_conf->cache_http));
 
   SET_HANDLER(&HttpSM::main_handler);
-
-  // Remember where this SM is running so it gets returned correctly
-  this->setThreadAffinity(this_ethread());
 
 #ifdef USE_HTTP_DEBUG_LISTS
   ink_mutex_acquire(&debug_sm_list_mutex);
@@ -1762,6 +1763,10 @@ HttpSM::state_http_server_open(int event, void *data)
     pending_action = nullptr;
 
     session->new_connection(vc);
+
+#ifdef HAVE_SYSTEMTAP
+    DTRACE_PROBE1(trafficserver, new_origin_server_connection, t_state.current.server->name);
+#endif
 
     session->state = HSS_ACTIVE;
     ats_ip_copy(&t_state.server_info.src_addr, netvc->get_local_addr());
@@ -3477,10 +3482,12 @@ HttpSM::tunnel_handler_post_ua(int event, HttpTunnelProducer *p)
     //   server and close the ua
     p->handler_state = HTTP_SM_POST_UA_FAIL;
     set_ua_abort(HttpTransact::ABORTED, event);
-    p->vc->do_io_write(nullptr, 0, nullptr);
-    p->vc->do_io_shutdown(IO_SHUTDOWN_READ);
+
     tunnel.chain_abort_all(p);
     server_session = nullptr;
+    p->read_vio    = nullptr;
+    p->vc->do_io_close(EHTTP_ERROR);
+
     // the in_tunnel status on both the ua & and
     //   it's consumer must already be set to true.  Previously
     //   we were setting it again to true but incorrectly in
