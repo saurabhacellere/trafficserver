@@ -123,9 +123,11 @@ public:
   ProxyAllocator http2ClientSessionAllocator;
   ProxyAllocator http2StreamAllocator;
   ProxyAllocator quicClientSessionAllocator;
+  ProxyAllocator quicHandshakeAllocator;
   ProxyAllocator quicBidiStreamAllocator;
   ProxyAllocator quicSendStreamAllocator;
   ProxyAllocator quicReceiveStreamAllocator;
+  ProxyAllocator quicStreamManagerAllocator;
   ProxyAllocator httpServerSessionAllocator;
   ProxyAllocator hdrHeapAllocator;
   ProxyAllocator strHeapAllocator;
@@ -178,13 +180,13 @@ protected:
 
 extern Thread *this_thread();
 
-TS_INLINE ink_hrtime
+inline ink_hrtime
 Thread::get_hrtime()
 {
   return cur_time;
 }
 
-TS_INLINE ink_hrtime
+inline ink_hrtime
 Thread::get_hrtime_updated()
 {
   return cur_time = ink_get_hrtime_internal();
