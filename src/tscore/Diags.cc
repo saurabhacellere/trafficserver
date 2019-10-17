@@ -34,8 +34,6 @@
 
  ****************************************************************************/
 
-#include "tscore/BufferWriter.h"
-#include "tscore/bwf_std_format.h"
 #include "tscore/ink_platform.h"
 #include "tscore/ink_memory.h"
 #include "tscore/ink_defs.h"
@@ -204,7 +202,7 @@ Diags::~Diags()
 //
 //      This routine outputs to all of the output targets enabled for this
 //      debugging level in config.outputs[diags_level].  Many higher level
-//      diagnostics printing routines are built upon print_va, including:
+//      diagnosting printing routines are built upon print_va, including:
 //
 //              void print(...)
 //              void log_va(...)
@@ -217,29 +215,75 @@ Diags::print_va(const char *debug_tag, DiagsLevel diags_level, const SourceLocat
                 va_list ap) const
 {
   ink_release_assert(diags_level < DiagsLevel_Count);
-  ts::LocalBufferWriter<1024> format_writer;
+
+  using ts::LocalBufferWriter;
+  LocalBufferWriter<1024> format_writer;
 
   // Save room for optional newline and terminating NUL bytes.
   format_writer.clip(2);
 
-  format_writer.print("[{timestamp}] ");
-  auto timestamp_offset = format_writer.size();
+  //////////////////////
+  // append timestamp //
+  //////////////////////
+  {
+    struct timeval tp = ink_gettimeofday();
+    time_t cur_clock  = (time_t)tp.tv_sec;
+    char timestamp_buf[48];
+    char *buffer = ink_ctime_r(&cur_clock, timestamp_buf);
 
-  format_writer.print("{thread-name}");
-  format_writer.print(" {}: ", level_name(diags_level));
+    int num_bytes_written = snprintf(&(timestamp_buf[19]), (sizeof(timestamp_buf) - 20), ".%03d", (int)(tp.tv_usec / 1000));
+
+    if (num_bytes_written > 0) {
+      format_writer.write('[');
+      format_writer.write(buffer + 4, strlen(buffer + 4));
+      format_writer.write("] ", 2);
+    }
+  }
+
+  size_t timestamp_end_offset = format_writer.size();
+
+  ///////////////////////
+  // add the thread name //
+  ///////////////////////
+  format_writer.print("{thread-name} ");
+
+  //////////////////////////////////
+  // append the diag level prefix //
+  //////////////////////////////////
+
+  format_writer.write(level_name(diags_level), strlen(level_name(diags_level)));
+  format_writer.write(": ", 2);
+
+  /////////////////////////////
+  // append location, if any //
+  /////////////////////////////
 
   if (location(loc, show_location, diags_level)) {
-    format_writer.print("<{}> ", *loc);
+    char *lp, buf[256];
+    lp = loc->str(buf, sizeof(buf));
+    if (lp) {
+      format_writer.write('<');
+      format_writer.write(lp, std::min(strlen(lp), sizeof(buf)));
+      format_writer.write("> ", 2);
+    }
   }
+  //////////////////////////
+  // append debugging tag //
+  //////////////////////////
 
-  if (debug_tag) {
-    format_writer.print("({}) ", debug_tag);
+  if (debug_tag != nullptr) {
+    format_writer.write('(');
+    format_writer.write(debug_tag, strlen(debug_tag));
+    format_writer.write(") ", 2);
   }
+  //////////////////////////////////////////////////////
+  // append original format string, ensure there is a //
+  // newline, and NUL terminate                       //
+  //////////////////////////////////////////////////////
 
-  format_writer.print("{}", format_string);
-
-  format_writer.extend(2);                   // restore the space for required termination.
-  if (format_writer.view().back() != '\n') { // safe because always some chars in the buffer.
+  format_writer.write(format_string, strlen(format_string));
+  format_writer.extend(2);
+  if (format_writer.data()[format_writer.size() - 1] != '\n') {
     format_writer.write('\n');
   }
   format_writer.write('\0');
@@ -315,7 +359,7 @@ Diags::print_va(const char *debug_tag, DiagsLevel diags_level, const SourceLocat
       priority = LOG_NOTICE;
       break;
     }
-    vsnprintf(syslog_buffer, sizeof(syslog_buffer), format_writer.data() + timestamp_offset, ap);
+    vsnprintf(syslog_buffer, sizeof(syslog_buffer), format_writer.data() + timestamp_end_offset, ap);
     syslog(priority, "%s", syslog_buffer);
   }
 
@@ -453,8 +497,8 @@ Diags::dump(FILE *fp) const
   fprintf(fp, "  action default tags: '%s'\n", (base_action_tags ? base_action_tags : "NULL"));
   fprintf(fp, "  outputs:\n");
   for (i = 0; i < DiagsLevel_Count; i++) {
-    fprintf(fp, "    %10s [stdout=%d, stderr=%d, syslog=%d, diagslog=%d]\n", level_name(static_cast<DiagsLevel>(i)),
-            config.outputs[i].to_stdout, config.outputs[i].to_stderr, config.outputs[i].to_syslog, config.outputs[i].to_diagslog);
+    fprintf(fp, "    %10s [stdout=%d, stderr=%d, syslog=%d, diagslog=%d]\n", level_name((DiagsLevel)i), config.outputs[i].to_stdout,
+            config.outputs[i].to_stderr, config.outputs[i].to_syslog, config.outputs[i].to_diagslog);
   }
 }
 

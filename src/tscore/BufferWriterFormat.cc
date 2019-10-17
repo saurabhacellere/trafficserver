@@ -32,7 +32,6 @@
 #include <cmath>
 #include <array>
 #include <chrono>
-#include <exception>
 
 using namespace std::literals;
 
@@ -99,11 +98,12 @@ BWFSpec::Property::Property()
 }
 
 /// Parse a format specification.
-BWFSpec::BWFSpec(TextView fmt) : _name(fmt.take_prefix_at(':'))
+BWFSpec::BWFSpec(TextView fmt)
 {
   TextView num; // temporary for number parsing.
   intmax_t n;
 
+  _name = fmt.take_prefix_at(':');
   // if it's parsable as a number, treat it as an index.
   n = tv_to_positive_decimal(_name, &num);
   if (num.size()) {
@@ -239,7 +239,7 @@ namespace bw_fmt
       size_t delta = min - extent;
       char *base   = w.auxBuffer();        // should be first byte of @a lw e.g. lw.data() - avoid const_cast.
       char *limit  = base + lw.capacity(); // first invalid byte.
-      char *dst;                           // used to track memory operation target;
+      char *dst;                           // used to track memory operation targest;
       char *last;                          // track limit of memory operation.
       size_t d2;
       switch (spec._align) {
@@ -452,7 +452,7 @@ namespace bw_fmt
     width -= static_cast<int>(n);
     std::string_view digits{buff + sizeof(buff) - n, n};
 
-    if (spec._align == BWFSpec::Align::SIGN) { // custom for signed case because prefix and digits are separated.
+    if (spec._align == BWFSpec::Align::SIGN) { // custom for signed case because prefix and digits are seperated.
       if (neg) {
         w.write(neg);
       }
@@ -482,9 +482,9 @@ namespace bw_fmt
     return w;
   }
 
-  /// Format for floating point values. Separates floating point into a whole number and a
+  /// Format for floating point values. Seperates floating point into a whole number and a
   /// fraction. The fraction is converted into an unsigned integer based on the specified
-  /// precision, spec._prec. ie. 3.1415 with precision two is separated into two unsigned
+  /// precision, spec._prec. ie. 3.1415 with precision two is seperated into two unsigned
   /// integers 3 and 14. The different pieces are assembled and placed into the BufferWriter.
   /// The default is two decimal places. ie. X.XX. The value is always written in base 10.
   ///
@@ -587,7 +587,7 @@ namespace bw_fmt
 
   /// Write out the @a data as hexadecimal, using @a digits as the conversion.
   void
-  Format_As_Hex(BufferWriter &w, std::string_view data, const char *digits)
+  Hex_Dump(BufferWriter &w, std::string_view data, const char *digits)
   {
     const char *ptr = data.data();
     for (auto n = data.size(); n > 0; --n) {
@@ -608,7 +608,14 @@ bwformat(BufferWriter &w, BWFSpec const &spec, std::string_view sv)
   }
 
   if ('x' == spec._type || 'X' == spec._type) {
-    return bwformat(w, spec, bwf::detail::MemDump(sv.data(), sv.size()));
+    const char *digits = 'x' == spec._type ? bw_fmt::LOWER_DIGITS : bw_fmt::UPPER_DIGITS;
+    width -= sv.size() * 2;
+    if (spec._radix_lead_p) {
+      w.write('0');
+      w.write(spec._type);
+      width -= 2;
+    }
+    bw_fmt::Write_Aligned(w, [&w, &sv, digits]() { bw_fmt::Hex_Dump(w, sv, digits); }, spec._align, width, spec._fill, 0);
   } else {
     width -= sv.size();
     bw_fmt::Write_Aligned(w, [&w, &sv]() { w.write(sv); }, spec._align, width, spec._fill, 0);
@@ -617,11 +624,16 @@ bwformat(BufferWriter &w, BWFSpec const &spec, std::string_view sv)
 }
 
 BufferWriter &
-bwformat(BufferWriter &w, BWFSpec const &spec, MemSpan<void> const &span)
+bwformat(BufferWriter &w, BWFSpec const &spec, MemSpan const &span)
 {
   static const BWFormat default_fmt{"{:#x}@{:p}"};
-  if ('x' == spec._type || 'X' == spec._type) {
-    bwformat(w, spec, bwf::detail::MemDump(span.data(), span.size()));
+  if (spec._ext.size() && 'd' == spec._ext.front()) {
+    const char *digits = 'X' == spec._type ? bw_fmt::UPPER_DIGITS : bw_fmt::LOWER_DIGITS;
+    if (spec._radix_lead_p) {
+      w.write('0');
+      w.write(digits[33]);
+    }
+    bw_fmt::Hex_Dump(w, span.view(), digits);
   } else {
     w.print(default_fmt, span.size(), span.data());
   }
@@ -946,28 +958,6 @@ bwformat(BufferWriter &w, BWFSpec const &spec, bwf::OptionalAffix const &opts)
   return w.write(opts._prefix).write(opts._text).write(opts._suffix);
 }
 
-BufferWriter &
-bwformat(BufferWriter &w, BWFSpec const &spec, bwf::detail::MemDump const &hex)
-{
-  char fmt_type      = spec._type;
-  const char *digits = bw_fmt::UPPER_DIGITS;
-
-  if ('X' != fmt_type) {
-    fmt_type = 'x';
-    digits   = bw_fmt::LOWER_DIGITS;
-  }
-
-  int width = int(spec._min) - hex._view.size() * 2; // amount left to fill.
-  if (spec._radix_lead_p) {
-    w.write('0');
-    w.write(fmt_type);
-    width -= 2;
-  }
-  bw_fmt::Write_Aligned(w, [&w, &hex, digits]() { bw_fmt::Format_As_Hex(w, hex._view, digits); }, spec._align, width, spec._fill,
-                        0);
-  return w;
-}
-
 } // namespace ts
 
 namespace
@@ -975,14 +965,12 @@ namespace
 void
 BWF_Timestamp(ts::BufferWriter &w, ts::BWFSpec const &spec)
 {
-  auto now   = std::chrono::system_clock::now();
-  auto epoch = std::chrono::system_clock::to_time_t(now);
-  ts::LocalBufferWriter<48> lw;
-
-  ctime_r(&epoch, lw.auxBuffer());
-  lw.fill(19); // clip trailing stuff, do not want.
-  lw.print(".{:03}", std::chrono::time_point_cast<std::chrono::milliseconds>(now).time_since_epoch().count() % 1000);
-  w.write(lw.view().substr(4));
+  // Unfortunately need to write to a temporary buffer or the sizing isn't correct if @a w is clipped
+  // because @c strftime returns 0 if the buffer isn't large enough.
+  char buff[32];
+  std::time_t t = std::time(nullptr);
+  auto n        = strftime(buff, sizeof(buff), "%Y %b %d %H:%M:%S", std::localtime(&t));
+  w.write(buff, n);
 }
 
 void
