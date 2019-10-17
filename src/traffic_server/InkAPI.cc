@@ -6087,20 +6087,20 @@ TSHttpTxnReenable(TSHttpTxn txnp, TSEvent event)
   // created using the ATS EThread API, eth will be NULL, and the
   // continuation needs to be called back on a REGULAR thread.
   //
-  // If we are not coming from the thread associated with the state machine,
-  // reschedule.  Also reschedule if we cannot get the state machine lock.
-  if (eth != nullptr && sm->getThreadAffinity() == eth) {
+  // If this function is being executed on a thread created by the API
+  // which is DEDICATED, the continuation needs to be called back on a
+  // REGULAR thread.
+  if (eth == nullptr || eth->tt != REGULAR || !eth->is_event_type(ET_NET)) {
+    eventProcessor.schedule_imm(new TSHttpSMCallback(sm, event), ET_NET);
+  } else {
     MUTEX_TRY_LOCK(trylock, sm->mutex, eth);
-    if (trylock.is_locked()) {
+    if (!trylock.is_locked()) {
+      eventProcessor.schedule_imm(new TSHttpSMCallback(sm, event), ET_NET);
+    } else {
       ink_assert(eth->is_event_type(ET_NET));
       sm->state_api_callback((int)event, nullptr);
-      return;
     }
   }
-  // Couldn't call the handler directly, schedule to the original SM thread
-  TSHttpSMCallback *cb = new TSHttpSMCallback(sm, event);
-  cb->setThreadAffinity(sm->getThreadAffinity());
-  eventProcessor.schedule_imm(cb, ET_NET);
 }
 
 TSReturnCode TSHttpArgIndexNameLookup(UserArg::Type type, const char *name, int *arg_idx, const char **description);
@@ -9162,7 +9162,7 @@ TSVConnTunnel(TSVConn sslp)
 }
 
 TSSslConnection
-TSVConnSslConnectionGet(TSVConn sslp)
+TSVConnSSLConnectionGet(TSVConn sslp)
 {
   TSSslConnection ssl       = nullptr;
   NetVConnection *vc        = reinterpret_cast<NetVConnection *>(sslp);
@@ -9551,7 +9551,7 @@ TSSslSessionGet(const TSSslSessionID *session_id)
 {
   SSL_SESSION *session = nullptr;
   if (session_id && session_cache) {
-    session_cache->getSession(reinterpret_cast<const SSLSessionID &>(*session_id), &session, nullptr);
+    session_cache->getSession(reinterpret_cast<const SSLSessionID &>(*session_id), &session);
   }
   return reinterpret_cast<TSSslSession>(session);
 }
@@ -9568,7 +9568,7 @@ TSSslSessionGetBuffer(const TSSslSessionID *session_id, char *buffer, int *len_p
 }
 
 TSReturnCode
-TSSslSessionInsert(const TSSslSessionID *session_id, TSSslSession add_session, TSSslConnection ssl_conn)
+TSSslSessionInsert(const TSSslSessionID *session_id, TSSslSession add_session)
 {
   // Don't insert if there is no session id or the cache is not yet set up
   if (session_id && session_cache) {
@@ -9579,8 +9579,7 @@ TSSslSessionInsert(const TSSslSessionID *session_id, TSSslSession add_session, T
       Debug("ssl.session_cache.insert", "TSSslSessionInsert: Inserting session '%s' ", buf);
     }
     SSL_SESSION *session = reinterpret_cast<SSL_SESSION *>(add_session);
-    SSL *ssl             = reinterpret_cast<SSL *>(ssl_conn);
-    session_cache->insertSession(reinterpret_cast<const SSLSessionID &>(*session_id), session, ssl);
+    session_cache->insertSession(reinterpret_cast<const SSLSessionID &>(*session_id), session);
     // insertSession returns void, assume all went well
     return TS_SUCCESS;
   } else {
@@ -9788,26 +9787,6 @@ const char *
 TSRegisterProtocolTag(const char *tag)
 {
   return nullptr;
-}
-
-TSReturnCode
-TSHttpTxnRedoCacheLookup(TSHttpTxn txnp, const char *url, int length)
-{
-  sdk_assert(sdk_sanity_check_txn(txnp) == TS_SUCCESS);
-
-  HttpSM *sm             = reinterpret_cast<HttpSM *>(txnp);
-  HttpTransact::State *s = &(sm->t_state);
-  sdk_assert(s->next_action == HttpTransact::SM_ACTION_CACHE_LOOKUP);
-
-  // Because of where this is in the state machine, the storage for the cache_info URL must
-  // have already been initialized and @a lookup_url must be valid.
-  auto result = s->cache_info.lookup_url->parse(url, length < 0 ? strlen(url) : length);
-  if (PARSE_RESULT_DONE == result) {
-    s->transact_return_point = nullptr;
-    sm->rewind_state_machine();
-    return TS_SUCCESS;
-  }
-  return TS_ERROR;
 }
 
 namespace
