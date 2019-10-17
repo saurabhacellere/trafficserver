@@ -265,54 +265,6 @@ HttpVCTable::cleanup_all()
     default_handler = _h;                 \
   }
 
-/*
- * Helper functions to ensure that the parallel
- * API set timeouts are set consistenly with the records.config settings
- */
-void
-HttpSM::set_server_netvc_inactivity_timeout(NetVConnection *netvc)
-{
-  if (netvc) {
-    if (t_state.api_txn_no_activity_timeout_value != -1) {
-      netvc->set_inactivity_timeout(HRTIME_MSECONDS(t_state.api_txn_no_activity_timeout_value));
-    } else {
-      netvc->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
-    }
-  }
-}
-
-void
-HttpSM::set_server_netvc_active_timeout(NetVConnection *netvc)
-{
-  if (netvc) {
-    if (t_state.api_txn_active_timeout_value != -1) {
-      netvc->set_active_timeout(HRTIME_MSECONDS(t_state.api_txn_active_timeout_value));
-    } else {
-      netvc->set_active_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_active_timeout_out));
-    }
-  }
-}
-
-void
-HttpSM::set_server_netvc_connect_timeout(NetVConnection *netvc)
-{
-  if (netvc) {
-    if (t_state.api_txn_connect_timeout_value != -1) {
-      netvc->set_inactivity_timeout(HRTIME_MSECONDS(t_state.api_txn_connect_timeout_value));
-    } else {
-      int connect_timeout;
-      if (t_state.method == HTTP_WKSIDX_POST || t_state.method == HTTP_WKSIDX_PUT) {
-        connect_timeout = t_state.txn_conf->post_connect_attempts_timeout;
-      } else if (t_state.current.server == &t_state.parent_info) {
-        connect_timeout = t_state.txn_conf->parent_connect_timeout;
-      } else {
-        connect_timeout = t_state.txn_conf->connect_attempts_timeout;
-      }
-      netvc->set_inactivity_timeout(HRTIME_SECONDS(connect_timeout));
-    }
-  }
-}
-
 HttpSM::HttpSM() : Continuation(nullptr), vc_table(this) {}
 
 void
@@ -372,9 +324,6 @@ HttpSM::init()
                        !(t_state.txn_conf->doc_in_cache_skip_dns) || !(t_state.txn_conf->cache_http));
 
   SET_HANDLER(&HttpSM::main_handler);
-
-  // Remember where this SM is running so it gets returned correctly
-  this->setThreadAffinity(this_ethread());
 
 #ifdef USE_HTTP_DEBUG_LISTS
   ink_mutex_acquire(&debug_sm_list_mutex);
@@ -1149,8 +1098,8 @@ HttpSM::state_raw_http_server_open(int event, void *data)
     t_state.current.state    = HttpTransact::CONNECTION_ALIVE;
     ats_ip_copy(&t_state.server_info.src_addr, netvc->get_local_addr());
 
-    set_server_netvc_inactivity_timeout(netvc);
-    set_server_netvc_active_timeout(netvc);
+    netvc->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
+    netvc->set_active_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_active_timeout_out));
     break;
 
   case VC_EVENT_ERROR:
@@ -1498,11 +1447,6 @@ plugins required to work with sni_routing.
     case HTTP_API_DEFERED_SERVER_ERROR:
       api_next = API_RETURN_DEFERED_SERVER_ERROR;
       break;
-    case HTTP_API_REWIND_STATE_MACHINE:
-      SMDebug("http", "REWIND");
-      callout_state = HTTP_API_NO_CALLOUT;
-      set_next_state();
-      return 0;
     default:
       ink_release_assert(0);
     }
@@ -1802,7 +1746,11 @@ HttpSM::state_http_server_open(int event, void *data)
     server_entry->vc_handler = &HttpSM::state_send_server_request_header;
 
     // Reset the timeout to the non-connect timeout
-    set_server_netvc_inactivity_timeout(server_session->get_netvc());
+    if (t_state.api_txn_no_activity_timeout_value != -1) {
+      server_session->get_netvc()->set_inactivity_timeout(HRTIME_MSECONDS(t_state.api_txn_no_activity_timeout_value));
+    } else {
+      server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
+    }
     handle_http_server_open();
     return 0;
   case EVENT_INTERVAL: // Delayed call from another thread
@@ -1891,7 +1839,11 @@ HttpSM::state_read_server_response_header(int event, void *data)
   if (server_response_hdr_bytes == 0) {
     milestones[TS_MILESTONE_SERVER_FIRST_READ] = Thread::get_hrtime();
 
-    set_server_netvc_inactivity_timeout(server_session->get_netvc());
+    if (t_state.api_txn_no_activity_timeout_value != -1) {
+      server_session->get_netvc()->set_inactivity_timeout(HRTIME_MSECONDS(t_state.api_txn_no_activity_timeout_value));
+    } else {
+      server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
+    }
 
     // For requests that contain a body, we can cancel the ua inactivity timeout.
     if (ua_txn && t_state.hdr_info.request_content_length) {
@@ -3477,10 +3429,12 @@ HttpSM::tunnel_handler_post_ua(int event, HttpTunnelProducer *p)
     //   server and close the ua
     p->handler_state = HTTP_SM_POST_UA_FAIL;
     set_ua_abort(HttpTransact::ABORTED, event);
-    p->vc->do_io_write(nullptr, 0, nullptr);
-    p->vc->do_io_shutdown(IO_SHUTDOWN_READ);
+
     tunnel.chain_abort_all(p);
     server_session = nullptr;
+    p->read_vio    = nullptr;
+    p->vc->do_io_close(EHTTP_ERROR);
+
     // the in_tunnel status on both the ua & and
     //   it's consumer must already be set to true.  Previously
     //   we were setting it again to true but incorrectly in
@@ -5708,7 +5662,7 @@ HttpSM::do_setup_post_tunnel(HttpVC_t to_vc_type)
   }
 
   ua_txn->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_in));
-  set_server_netvc_inactivity_timeout(server_session->get_netvc());
+  server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
 
   tunnel.tunnel_run(p);
 
@@ -5950,8 +5904,27 @@ HttpSM::attach_server_session(Http1ServerSession *s)
   // Set the inactivity timeout to the connect timeout so that we
   //   we fail this server if it doesn't start sending the response
   //   header
-  set_server_netvc_connect_timeout(server_session->get_netvc());
-  set_server_netvc_active_timeout(server_session->get_netvc());
+  MgmtInt connect_timeout;
+
+  if (t_state.method == HTTP_WKSIDX_POST || t_state.method == HTTP_WKSIDX_PUT) {
+    connect_timeout = t_state.txn_conf->post_connect_attempts_timeout;
+  } else if (t_state.current.server == &t_state.parent_info) {
+    connect_timeout = t_state.txn_conf->parent_connect_timeout;
+  } else {
+    connect_timeout = t_state.txn_conf->connect_attempts_timeout;
+  }
+
+  if (t_state.api_txn_connect_timeout_value != -1) {
+    server_session->get_netvc()->set_inactivity_timeout(HRTIME_MSECONDS(t_state.api_txn_connect_timeout_value));
+  } else {
+    server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(connect_timeout));
+  }
+
+  if (t_state.api_txn_active_timeout_value != -1) {
+    server_session->get_netvc()->set_active_timeout(HRTIME_MSECONDS(t_state.api_txn_active_timeout_value));
+  } else {
+    server_session->get_netvc()->set_active_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_active_timeout_out));
+  }
 
   if (plugin_tunnel_type != HTTP_NO_PLUGIN_TUNNEL || will_be_private_ss) {
     SMDebug("http_ss", "Setting server session to private");
@@ -5963,7 +5936,7 @@ void
 HttpSM::setup_server_send_request_api()
 {
   // Make sure the VC is on the correct timeout
-  set_server_netvc_inactivity_timeout(server_session->get_netvc());
+  server_session->get_netvc()->set_inactivity_timeout(HRTIME_SECONDS(t_state.txn_conf->transaction_no_activity_timeout_out));
   t_state.api_next_action = HttpTransact::SM_ACTION_API_SEND_REQUEST_HDR;
   do_api_callout();
 }
@@ -8018,12 +7991,6 @@ HttpSM::find_proto_string(HTTPVersion version) const
     return IP_PROTO_TAG_HTTP_0_9;
   }
   return {};
-}
-
-void
-HttpSM::rewind_state_machine()
-{
-  callout_state = HTTP_API_REWIND_STATE_MACHINE;
 }
 
 // YTS Team, yamsat Plugin
