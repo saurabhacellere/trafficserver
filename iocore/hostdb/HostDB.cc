@@ -994,7 +994,7 @@ HostDBContinuation::removeEvent(int /* event ATS_UNUSED */, Event *e)
   if (cont) {
     proxy_mutex = cont->mutex;
   }
-  WEAK_MUTEX_TRY_LOCK(lock, proxy_mutex, e->ethread);
+  MUTEX_TRY_LOCK(lock, proxy_mutex, e->ethread);
   if (!lock.is_locked()) {
     e->schedule_in(HOST_DB_RETRY_PERIOD);
     return EVENT_CONT;
@@ -1178,8 +1178,9 @@ HostDBContinuation::dnsEvent(int event, HostEnt *e)
   if (event == EVENT_INTERVAL) {
     if (!action.continuation) {
       // give up on insert, it has been too long
+      // remove_trigger_pending_dns will notify and clean up all requests
+      // including this one.
       remove_trigger_pending_dns();
-      hostdb_cont_free(this);
       return EVENT_DONE;
     }
     MUTEX_TRY_LOCK(lock, action.mutex, thread);
@@ -1434,18 +1435,18 @@ HostDBContinuation::dnsEvent(int event, HostEnt *e)
         }
       }
       if (need_to_reschedule) {
-        remove_trigger_pending_dns();
         SET_HANDLER((HostDBContHandler)&HostDBContinuation::probeEvent);
-        thread->schedule_in(this, HOST_DB_RETRY_PERIOD);
+        // remove_trigger_pending_dns should kick off the current hostDB too
+        // No need to explicitly reschedule
+        remove_trigger_pending_dns();
         return EVENT_CONT;
       }
     }
     // wake up everyone else who is waiting
     remove_trigger_pending_dns();
 
-    // all done
+    // all done, or at least scheduled to be all done
     //
-    hostdb_cont_free(this);
     return EVENT_DONE;
   }
 }
@@ -1556,7 +1557,7 @@ HostDBContinuation::probeEvent(int /* event ATS_UNUSED */, Event *e)
     }
 
     if (action.continuation && r) {
-      reply_to_cont(action.continuation, r.get(), is_srv());
+      reply_to_cont(action.continuation, r.get());
     }
 
     // If it succeeds or it was a remote probe, we are done
