@@ -195,7 +195,7 @@ ProxySession::get_half_close_flag() const
 int64_t
 ProxySession::connection_id() const
 {
-  return con_id;
+  return _connection_id;
 }
 
 void
