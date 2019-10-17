@@ -24,7 +24,7 @@ TSHttpTxnServerPush
 Synopsis
 ========
 
-`#include <ts/experimental.h>`
+`#include <ts/ts.h>`
 
 .. function:: void TSHttpTxnServerPush(TSHttpTxn txnp, const char *url, int url_len)
 
@@ -37,12 +37,6 @@ This API works only if the protocol of a transaction supports Server Push and it
 is not disabled by the client. You can call this API without checking whether
 Server Push is available on the transaction and it does nothing if Server Push
 is not available.
-
-
-Notes
-=====
-
-This API may be changed in the future version since it is experimental.
 
 See Also
 ========
