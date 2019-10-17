@@ -369,17 +369,20 @@ Http2ClientSession::main_event_handler(int event, void *edata)
   case VC_EVENT_INACTIVITY_TIMEOUT:
   case VC_EVENT_ERROR:
   case VC_EVENT_EOS:
+    Http2SsnDebug("%s (%d)", get_vc_event_name(event), event);
+
     this->set_dying_event(event);
     this->do_io_close();
     retval = 0;
     break;
 
   case VC_EVENT_WRITE_READY:
-    retval = 0;
-    break;
-
   case VC_EVENT_WRITE_COMPLETE:
-    // Seems as this is being closed already
+    Http2SsnDebug("%s (%d)", get_vc_event_name(event), event);
+
+    this->connection_state.restart_streams();
+    this->write_vio->reenable();
+
     retval = 0;
     break;
 
@@ -650,6 +653,12 @@ Http2ClientSession::_should_do_something_else()
   return (this->_n_frame_read & 0x7F) == 0;
 }
 
+bool
+Http2ClientSession::ready_to_free() const
+{
+  return kill_me;
+}
+
 NetVConnection *
 Http2ClientSession::get_netvc() const
 {
@@ -673,6 +682,12 @@ Http2ClientSession::write_reenable()
   write_vio->reenable();
 }
 
+const Http2UpgradeContext &
+Http2ClientSession::get_upgrade_context() const
+{
+  return upgrade_context;
+}
+
 int
 Http2ClientSession::get_transact_count() const
 {
@@ -682,6 +697,24 @@ Http2ClientSession::get_transact_count() const
 void
 Http2ClientSession::release(ProxyTransaction *trans)
 {
+}
+
+void
+Http2ClientSession::set_dying_event(int event)
+{
+  dying_event = event;
+}
+
+int
+Http2ClientSession::get_dying_event() const
+{
+  return dying_event;
+}
+
+bool
+Http2ClientSession::is_recursing() const
+{
+  return recursion > 0;
 }
 
 const char *
@@ -716,10 +749,34 @@ Http2ClientSession::protocol_contains(std::string_view prefix) const
   return retval;
 }
 
+bool
+Http2ClientSession::get_half_close_local_flag() const
+{
+  return half_close_local;
+}
+
+bool
+Http2ClientSession::is_url_pushed(const char *url, int url_len)
+{
+  return h2_pushed_urls.find(url) != h2_pushed_urls.end();
+}
+
 void
 Http2ClientSession::add_url_to_pushed_table(const char *url, int url_len)
 {
   if (h2_pushed_urls.size() < Http2::push_diary_size) {
     h2_pushed_urls.emplace(url);
   }
+}
+
+int64_t
+Http2ClientSession::write_buffer_size()
+{
+  return write_buffer->max_read_avail();
+}
+
+int64_t
+Http2ClientSession::write_avail()
+{
+  return this->write_buffer->write_avail();
 }

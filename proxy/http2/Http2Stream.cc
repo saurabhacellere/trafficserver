@@ -420,9 +420,9 @@ Http2Stream::terminate_if_possible()
   if (terminate_stream && reentrancy_count == 0) {
     REMEMBER(NO_EVENT, this->reentrancy_count);
 
-    Http2ClientSession *h2_proxy_ssn = static_cast<Http2ClientSession *>(this->_proxy_ssn);
-    SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
-    h2_proxy_ssn->connection_state.delete_stream(this);
+    Http2ClientSession *h2_parent = static_cast<Http2ClientSession *>(_proxy_ssn);
+    SCOPED_MUTEX_LOCK(lock, h2_parent->connection_state.mutex, this_ethread());
+    h2_parent->connection_state.delete_stream(this);
     destroy();
   }
 }
@@ -585,7 +585,7 @@ Http2Stream::update_write_request(IOBufferReader *buf_reader, int64_t write_len,
   }
   ink_release_assert(this->_thread == this_ethread());
 
-  Http2ClientSession *h2_proxy_ssn = static_cast<Http2ClientSession *>(this->_proxy_ssn);
+  Http2ClientSession *_proxy_ssn = static_cast<Http2ClientSession *>(this->get_proxy_ssn());
 
   SCOPED_MUTEX_LOCK(lock, write_vio.mutex, this_ethread());
 
@@ -641,17 +641,17 @@ Http2Stream::update_write_request(IOBufferReader *buf_reader, int64_t write_len,
         int len;
         const char *value = field->value_get(&len);
         if (memcmp(HTTP_VALUE_CLOSE, value, HTTP_LEN_CLOSE) == 0) {
-          SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
-          if (h2_proxy_ssn->connection_state.get_shutdown_state() == HTTP2_SHUTDOWN_NONE) {
-            h2_proxy_ssn->connection_state.set_shutdown_state(HTTP2_SHUTDOWN_NOT_INITIATED, Http2ErrorCode::HTTP2_ERROR_NO_ERROR);
+          SCOPED_MUTEX_LOCK(lock, _proxy_ssn->connection_state.mutex, this_ethread());
+          if (_proxy_ssn->connection_state.get_shutdown_state() == HTTP2_SHUTDOWN_NONE) {
+            _proxy_ssn->connection_state.set_shutdown_state(HTTP2_SHUTDOWN_NOT_INITIATED, Http2ErrorCode::HTTP2_ERROR_NO_ERROR);
           }
         }
       }
 
       {
-        SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
+        SCOPED_MUTEX_LOCK(lock, _proxy_ssn->connection_state.mutex, this_ethread());
         // Send the response header back
-        h2_proxy_ssn->connection_state.send_headers_frame(this);
+        _proxy_ssn->connection_state.send_headers_frame(this);
       }
 
       // See if the response is chunked.  Set up the dechunking logic if it is
@@ -687,15 +687,11 @@ Http2Stream::update_write_request(IOBufferReader *buf_reader, int64_t write_len,
   return;
 }
 
-void
+bool
 Http2Stream::signal_write_event(bool call_update)
 {
   if (this->write_vio.cont == nullptr || this->write_vio.op == VIO::NONE) {
-    return;
-  }
-
-  if (this->write_vio.get_writer()->write_avail() == 0) {
-    return;
+    return false;
   }
 
   int send_event = this->write_vio.ntodo() == 0 ? VC_EVENT_WRITE_COMPLETE : VC_EVENT_WRITE_READY;
@@ -709,31 +705,34 @@ Http2Stream::signal_write_event(bool call_update)
     // Called from do_io_write. Might still be setting up state. Send an event to let the dust settle
     write_event = send_tracked_event(write_event, send_event, &write_vio);
   }
+  return send_event == VC_EVENT_WRITE_READY;
 }
 
 void
 Http2Stream::push_promise(URL &url, const MIMEField *accept_encoding)
 {
-  Http2ClientSession *h2_proxy_ssn = static_cast<Http2ClientSession *>(this->_proxy_ssn);
-  SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
-  h2_proxy_ssn->connection_state.send_push_promise_frame(this, url, accept_encoding);
+  Http2ClientSession *_proxy_ssn = static_cast<Http2ClientSession *>(this->get_proxy_ssn());
+  SCOPED_MUTEX_LOCK(lock, _proxy_ssn->connection_state.mutex, this_ethread());
+  _proxy_ssn->connection_state.send_push_promise_frame(this, url, accept_encoding);
 }
 
 void
 Http2Stream::send_response_body(bool call_update)
 {
-  Http2ClientSession *h2_proxy_ssn = static_cast<Http2ClientSession *>(this->_proxy_ssn);
-  inactive_timeout_at              = Thread::get_hrtime() + inactive_timeout;
+  Http2ClientSession *_proxy_ssn = static_cast<Http2ClientSession *>(this->get_proxy_ssn());
+  inactive_timeout_at            = Thread::get_hrtime() + inactive_timeout;
 
   if (Http2::stream_priority_enabled) {
-    SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
-    h2_proxy_ssn->connection_state.schedule_stream(this);
+    SCOPED_MUTEX_LOCK(lock, _proxy_ssn->connection_state.mutex, this_ethread());
+    _proxy_ssn->connection_state.schedule_stream(this);
     // signal_write_event() will be called from `Http2ConnectionState::send_data_frames_depends_on_priority()`
     // when write_vio is consumed
   } else {
-    SCOPED_MUTEX_LOCK(lock, h2_proxy_ssn->connection_state.mutex, this_ethread());
-    h2_proxy_ssn->connection_state.send_data_frames(this);
-    this->signal_write_event(call_update);
+    SCOPED_MUTEX_LOCK(lock, _proxy_ssn->connection_state.mutex, this_ethread());
+    if (this->signal_write_event(call_update)) {
+      // Kick off the IO again only if the write signal was a WRITE_READY
+      _proxy_ssn->connection_state.send_data_frames(this);
+    }
     // XXX The call to signal_write_event can destroy/free the Http2Stream.
     // Don't modify the Http2Stream after calling this method.
   }
@@ -1039,6 +1038,12 @@ Http2Stream::decrement_server_rwnd(size_t amount)
   }
 }
 
+void
+Http2Stream::mark_milestone(Http2StreamMilestone type)
+{
+  this->_milestones.mark(type);
+}
+
 bool
 Http2Stream::_switch_thread_if_not_on_right_thread(int event, void *edata)
 {
@@ -1053,6 +1058,12 @@ Http2Stream::_switch_thread_if_not_on_right_thread(int event, void *edata)
   return true;
 }
 
+bool
+Http2Stream::is_body_done() const
+{
+  return body_done;
+}
+
 void
 Http2Stream::mark_body_done()
 {
@@ -1062,4 +1073,98 @@ Http2Stream::mark_body_done()
                chunked_handler.state == ChunkedHandler::CHUNK_READ_ERROR);
     this->write_vio.nbytes = response_header.length_get() + chunked_handler.dechunked_size;
   }
+}
+
+void
+Http2Stream::update_sent_count(unsigned num_bytes)
+{
+  bytes_sent += num_bytes;
+  this->write_vio.ndone += num_bytes;
+}
+
+Http2StreamId
+Http2Stream::get_id() const
+{
+  return _id;
+}
+
+int
+Http2Stream::get_transaction_id() const
+{
+  return _id;
+}
+
+Http2StreamState
+Http2Stream::get_state() const
+{
+  return _state;
+}
+
+void
+Http2Stream::update_initial_rwnd(Http2WindowSize new_size)
+{
+  this->_client_rwnd = new_size;
+}
+
+bool
+Http2Stream::has_trailing_header() const
+{
+  return trailing_header;
+}
+
+void
+Http2Stream::set_request_headers(HTTPHdr &h2_headers)
+{
+  _req_header.copy(&h2_headers);
+}
+
+// Check entire DATA payload length if content-length: header is exist
+void
+Http2Stream::increment_data_length(uint64_t length)
+{
+  data_length += length;
+}
+
+bool
+Http2Stream::payload_length_is_valid() const
+{
+  uint32_t content_length = _req_header.get_content_length();
+  return content_length == 0 || content_length == data_length;
+}
+
+bool
+Http2Stream::response_is_chunked() const
+{
+  return chunked;
+}
+
+bool
+Http2Stream::allow_half_open() const
+{
+  return false;
+}
+
+bool
+Http2Stream::is_client_state_writeable() const
+{
+  return _state == Http2StreamState::HTTP2_STREAM_STATE_OPEN || _state == Http2StreamState::HTTP2_STREAM_STATE_HALF_CLOSED_REMOTE ||
+         _state == Http2StreamState::HTTP2_STREAM_STATE_RESERVED_LOCAL;
+}
+bool
+Http2Stream::is_closed() const
+{
+  return closed;
+}
+
+bool
+Http2Stream::is_first_transaction() const
+{
+  return is_first_transaction_flag;
+}
+
+uint64_t
+Http2Stream::backlog(uint64_t limit)
+{
+  return this->response_reader->read_avail() +
+         dynamic_cast<Http2ClientSession *>(this->get_proxy_ssn())->get_write_reader()->read_avail();
 }
