@@ -573,6 +573,7 @@ cqtx  Client Request The full HTTP client request text, minus headers, e.g.
 SSL / Encryption
 ~~~~~~~~~~~~~~~~
 
+.. _cssn:
 .. _cqssl:
 .. _cqssr:
 .. _cqssv:
@@ -586,6 +587,9 @@ features.
 ===== ============== ==========================================================
 Field Source         Description
 ===== ============== ==========================================================
+cssn  Client TLS     SNI server name in client Hello message in TLS handshake.
+      Hello          If no server name present in Hello, or the transaction
+                     was not over TLS, this field will contain ``n/a``.
 cqssl Client Request SSL client request status indicates if this client
                      connection is over SSL.
 cqssr Client Request SSL session ticket reused status; indicates if the current
