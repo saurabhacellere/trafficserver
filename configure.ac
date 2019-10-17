@@ -32,10 +32,10 @@
 # Version number is calculated as MAJOR * 1000000 + MINOR * 1000 + MICRO
 # Version string is in the form of MAJOR.MINOR.MICRO[sufix]
 #
-m4_define([TS_VERSION_S],[10.0.0])
-m4_define([TS_VERSION_N],[10000000])
+m4_define([TS_VERSION_S],[8.0.6])
+m4_define([TS_VERSION_N],[8000006])
 
-AC_INIT([Apache Traffic Server], TS_VERSION_S(), [dev@trafficserver.apache.org], [trafficserver], [https://trafficserver.apache.org])
+AC_INIT([Apache Traffic Server], TS_VERSION_S(), [dev@trafficserver.apache.org], [trafficserver],[http://trafficserver.apache.org])
 AC_PREREQ([2.59])
 AC_CONFIG_AUX_DIR([build/_aux])
 AC_CONFIG_SRCDIR([src/traffic_server/traffic_server.cc])
@@ -82,7 +82,14 @@ AC_SUBST(TS_VERSION_MICRO)
 
 dnl Hard-coded top of ink_autoconf.h:
 AH_TOP([
-#pragma once
+#ifndef _ink_autoconf_h
+#define _ink_autoconf_h
+])
+
+dnl Hard-coded inclusion at the tail end of ink_autoconf.h:
+AH_BOTTOM([
+
+#endif /* _ink_autoconf_h */
 ])
 
 #
@@ -291,30 +298,19 @@ AM_CONDITIONAL([BUILD_TESTS], [test 0 -ne $has_tests])
 # makes the diagnostic output ugly and hard to follow.
 AC_ARG_VAR(JAVA, [path to java executor])
 AC_CHECK_PROG(JAVA, java, java)
-AC_MSG_RESULT([Checking whether to build documentation:])
+AC_MSG_CHECKING([whether to build documentation])
 AC_ARG_ENABLE([docs],
   [AS_HELP_STRING([--enable-docs],[enable documentation building])],
   [
     enable_doc_build=yes
-    AM_PATH_PYTHON([3.4], [
-      TS_MAN1_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=1 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
-      TS_MAN3_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=3 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
-      TS_MAN5_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=5 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
-      TS_MAN8_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=8 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
-    ], [
-      enable_doc_build=no
-      AC_ERROR([Doc building disabled, python 3.4 or better required])
-    ])
-
     AS_IF([test -z "$JAVA"],
       [
         enable_doc_build=no
         AC_ERROR([Doc building disabled, java required but not found])
       ])
     AC_ARG_VAR(SPHINXBUILD, [the sphinx-build documentation generator])
-    AC_ARG_VAR(SPHINXOPTS, [additional sphinx-build options])
-    AC_PATH_PROG([SPHINXBUILD], [$SPHINXBUILD], [$PYTHON -m sphinx])
-    AS_IF(["$PYTHON" "$srcdir/doc/checkvers.py" --check-version],
+    AC_PATH_PROG([SPHINXBUILD], [sphinx-build], [])
+    AS_IF(["$srcdir/doc/checkvers.sh" "$SPHINXBUILD" "$srcdir/doc/checkvers.py"],
       [
         sphinx_version_check=yes
       ],[
@@ -322,28 +318,11 @@ AC_ARG_ENABLE([docs],
         enable_doc_build=no
         AC_ERROR([Doc building disabled, check sphinx installation])
       ])
-
-
-    AC_SUBST(TS_MAN1_MANPAGES)
-    AC_SUBST(TS_MAN3_MANPAGES)
-    AC_SUBST(TS_MAN5_MANPAGES)
-    AC_SUBST(TS_MAN8_MANPAGES)
-
-    AC_MSG_CHECKING([whether to build man pages])
-    AS_IF([test "x$sphinx_version_check" = "xyes" -a "x$SPHINXBUILD" != "xfalse"], [
-      build_manpages=true
-      AC_MSG_RESULT([yes])
-    ], [
-      build_manpages=false
-      AC_MSG_RESULT([no])
-    ])
-
   ],
   [enable_doc_build=no]
 )
-AC_MSG_RESULT([Will build documentation: $enable_doc_build])
+AC_MSG_RESULT([$enable_doc_build])
 AM_CONDITIONAL([BUILD_DOCS], [test "xyes" = "x$enable_doc_build"])
-AM_CONDITIONAL([BUILD_MANPAGES], [test "xtrue" = "x$build_manpages"])
 
 #
 # Remote Coverity Prevent commit
@@ -440,6 +419,18 @@ AC_ARG_ENABLE([hardening],
 AC_MSG_RESULT([$enable_hardening])
 
 #
+# Enable SSLv3 to origin
+#
+AC_MSG_CHECKING([whether to enable SSLv3 config for origin connections])
+AC_ARG_ENABLE([sslv3-client],
+  [AS_HELP_STRING([--enable-sslv3-client],[Enable SSLv3 config for origin connections (Only do this if you understand the risks)])],
+  [],
+  [enable_sslv3_client="no"]
+)
+AC_MSG_RESULT([$enable_sslv3_client])
+TS_ARG_ENABLE_VAR([use], [sslv3-client])
+
+#
 # Use TPROXY for connection transparency.
 #
 AC_MSG_CHECKING([whether to enable TPROXY based transparency])
@@ -508,6 +499,12 @@ AC_ARG_ENABLE([experimental-plugins],
 )
 AC_MSG_RESULT([$enable_experimental_plugins])
 AM_CONDITIONAL([BUILD_EXPERIMENTAL_PLUGINS], [ test "x${enable_experimental_plugins}" = "xyes" ])
+
+#
+# Enable experimental/memcached_remap plugin
+#
+PKG_CHECK_MODULES([LIBMEMCACHED], [libmemcached >= 1.0], [have_libmemcached=yes], [have_libmemcached=no])
+AM_CONDITIONAL([BUILD_MEMCACHED_REMAP_PLUGIN], [test "x${have_libmemcached}" = "xyes"])
 
 #
 # Check Magick++ is available. Enable experimental/webp_transform plugin
@@ -649,7 +646,7 @@ TS_ADDTO(AM_CFLAGS, [-std=gnu99])
 ac_save_CXX="$CXX"
 CXX="$CXX -std=c++17"
 AC_LANG_PUSH(C++)
-AC_MSG_CHECKING([whether $CXX supports -std=c++17])
+AC_MSG_CHECKING([checking whether $CXX supports -std=c++17])
 AC_COMPILE_IFELSE([
     AC_LANG_PROGRAM([
 #if __cplusplus < 201703L
@@ -739,12 +736,38 @@ AC_CHECK_PROG(ASCPP, cpp, cpp)
 AC_CHECK_TOOL(AR, ar, ar)
 AC_ISC_POSIX
 
+AM_PATH_PYTHON([2.4], [
+  dnl action-if-found
+  TS_MAN1_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=1 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
+  TS_MAN3_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=3 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
+  TS_MAN5_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=5 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
+  TS_MAN8_MANPAGES=`cd $srcdir/doc && $PYTHON manpages.py --section=8 | $AWK '{print "$(BUILDDIR)/man/" $0 }' | tr '\n' ' '`
+], [
+  dnl action-if-not-found
+  :
+])
+
 AC_ARG_VAR(RPATH, [path to be added to rpath])
+AC_ARG_VAR(SPHINXOPTS, [additional sphinx-build options])
 
 AC_ARG_VAR([CLANG_TIDY], [clang-tidy command])
 
 # Default CLANG_TIDY to "clang-tidy", or "false" if it is not present.
 AC_PATH_PROG([CLANG_TIDY], [clang-tidy],[false])
+
+AC_SUBST(TS_MAN1_MANPAGES)
+AC_SUBST(TS_MAN3_MANPAGES)
+AC_SUBST(TS_MAN5_MANPAGES)
+AC_SUBST(TS_MAN8_MANPAGES)
+
+AC_MSG_CHECKING([whether to build man pages])
+AS_IF([test "x$sphinx_version_check" = "xyes" -a "x$SPHINXBUILD" != "xfalse"], [
+  AM_CONDITIONAL([BUILD_MANPAGES], [true])
+  AC_MSG_RESULT([yes])
+], [
+  AM_CONDITIONAL([BUILD_MANPAGES], [false])
+  AC_MSG_RESULT([no])
+])
 
 # Do bison check by hand because we must do a version check.
 # Use YACC because it makes autotools shut up.
@@ -813,7 +836,7 @@ AX_PROG_PERL_MODULES([ExtUtils::MakeMaker], AM_CONDITIONAL([BUILD_PERL_LIB], [tr
 )
 
 # Check for GNU-style -On optimization flags
-AC_MSG_CHECKING([whether to auto-set compiler optimization flags])
+AC_MSG_CHECKING([checking whether to auto-set compiler optimization flags])
 has_optimizer_flags=`echo "$CFLAGS $CXXFLAGS" | ${AWK} '$0 !~ /-O.?/{print "no"}'`
 AS_IF([test "x${has_optimizer_flags}" = "xno"],
         [
@@ -974,97 +997,26 @@ fi
 
 # Flags for ASAN
 if test "x${enable_asan}" = "xyes"; then
-  if test "x${enable_tsan}" = "xyes" -o "x${enable_tsan}" = "xstatic"; then
+  if test "x${enable_tsan}" = "xyes"; then
     AC_ERROR([Cannot have ASAN and TSAN options at the same time, pick one])
   fi
   TS_ADDTO(AM_CFLAGS, [-fno-omit-frame-pointer -fsanitize=address])
   TS_ADDTO(AM_CXXFLAGS, [-fno-omit-frame-pointer -fsanitize=address])
-elif test "x${enable_asan}" = "xstatic"; then
-  if test "x${enable_tsan}" = "xyes" -o "x${enable_tsan}" = "xstatic"; then
-    AC_ERROR([Cannot have ASAN and TSAN options at the same time, pick one])
-  fi
-  asan_CXXFLAGS="$CXXFLAGS"
-  CXXFLAGS="$CXXFLAGS -fno-omit-frame-pointer -fsanitize=address -static-libasan"
-  AC_LANG_PUSH(C++)
-  AC_MSG_CHECKING([static ASAN library is available])
-  AC_LINK_IFELSE(
-    [AC_LANG_PROGRAM([#include <stdlib.h>], [])],
-    [AC_MSG_RESULT([yes])],
-    [
-      AC_MSG_RESULT([no])
-      AC_ERROR([Cannot find static ASAN library.])
-    ]
-  )
-  AC_LANG_POP
-  CXXFLAGS="$asan_CXXFLAGS"
-  TS_ADDTO(AM_CFLAGS, [-fno-omit-frame-pointer -fsanitize=address -static-libasan])
-  TS_ADDTO(AM_CXXFLAGS, [-fno-omit-frame-pointer -fsanitize=address -static-libasan])
 fi
 
 # Flags for LSAN stand-alone mode
 if test "x${enable_lsan}" = "xyes"; then
-  if test "x${enable_asan}" = "xyes" -o "x${enable_asan}" = "xstatic"; then
+  if test "x${enable_asan}" = "xyes"; then
     AC_ERROR([ASAN already specified, --enable-lsan is meant only for lsan stand-alone mode])
-  fi
-  if test "x${enable_tsan}" = "xyes" -o "x${enable_tsan}" = "xstatic"; then
-    AC_ERROR([Cannot have LSAN and TSAN options at the same time, pick one])
   fi
   TS_ADDTO(AM_CFLAGS, [-fno-omit-frame-pointer -fsanitize=leak])
   TS_ADDTO(AM_CXXFLAGS, [-fno-omit-frame-pointer -fsanitize=leak])
-elif test "x${enable_lsan}" = "xstatic"; then
-  if test "x${enable_asan}" = "xyes" -o "x${enable_asan}" = "xstatic"; then
-    AC_ERROR([ASAN already specified, --enable-lsan is meant only for lsan stand-alone mode])
-  fi
-  if test "x${enable_tsan}" = "xyes" -o "x${enable_tsan}" = "xstatic"; then
-    AC_ERROR([Cannot have LSAN and TSAN options at the same time, pick one])
-  fi
-  AC_CHECK_LIB(lsan, _init, [lsan_have_libs=yes], [lsan_have_libs=no])
-  if test "x${lsan_have_libs}" == "xno"; then
-    AC_ERROR([Cannot find LSAN static library])
-  fi
-  lsan_CXXFLAGS="$CXXFLAGS"
-  CXXFLAGS="$CXXFLAGS -fno-omit-frame-pointer -fsanitize=leak -static-liblsan"
-  AC_LANG_PUSH(C++)
-  AC_MSG_CHECKING([static LSAN library is available])
-  AC_LINK_IFELSE(
-    [AC_LANG_PROGRAM([#include <stdlib.h>], [])],
-    [AC_MSG_RESULT([yes])],
-    [
-      AC_MSG_RESULT([no])
-      AC_ERROR([Cannot find static LSAN library.])
-    ]
-  )
-  AC_LANG_POP
-  CXXFLAGS="$lsan_CXXFLAGS"
-  TS_ADDTO(AM_CFLAGS, [-fno-omit-frame-pointer -fsanitize=leak -static-liblsan])
-  TS_ADDTO(AM_CXXFLAGS, [-fno-omit-frame-pointer -fsanitize=leak -static-liblsan])
 fi
 
 # Flags for TSAN
 if test "x${enable_tsan}" = "xyes"; then
   TS_ADDTO(AM_CFLAGS, [-fsanitize=thread])
   TS_ADDTO(AM_CXXFLAGS, [-fsanitize=thread])
-elif test "x${enable_tsan}" = "xstatic"; then
-  AC_CHECK_LIB(tsan, _init, [tsan_have_libs=yes], [tsan_have_libs=no])
-  if test "x${tsan_have_libs}" == "xno"; then
-    AC_ERROR([Cannot find TSAN static library])
-  fi
-  tsan_CXXFLAGS="$CXXFLAGS"
-  CXXFLAGS="$CXXFLAGS -fsanitize=thread -static-libtsan"
-  AC_LANG_PUSH(C++)
-  AC_MSG_CHECKING([static TSAN library is available])
-  AC_LINK_IFELSE(
-    [AC_LANG_PROGRAM([#include <stdlib.h>], [])],
-    [AC_MSG_RESULT([yes])],
-    [
-      AC_MSG_RESULT([no])
-      AC_ERROR([Cannot find static TSAN library.])
-    ]
-  )
-  AC_LANG_POP
-  CXXFLAGS="$tsan_CXXFLAGS"
-  TS_ADDTO(AM_CFLAGS, [-fsanitize=thread -static-libtsan])
-  TS_ADDTO(AM_CXXFLAGS, [-fsanitize=thread -static-libtsan])
 fi
 
 # Checks for pointer size.
@@ -1220,56 +1172,35 @@ CFLAGS="$__saved_CFLAGS"
 AC_SUBST([CURSES_LDFLAGS],[$curses_ldflags])
 
 #
-# Check for -latomic need (at least for mips arch)
-TS_CHECK_ATOMIC
-TS_ADDTO([LDFLAGS], [$ATOMIC_LIBS])
-
-#
 # Check for SSL presence and usability
-#
 TS_CHECK_CRYPTO
 
-# Check for OpenSSL Version
-TS_CHECK_CRYPTO_VERSION
+#
+# Check for NextProtocolNegotiation TLS extension support.
+TS_CHECK_CRYPTO_NEXTPROTONEG
 
+#
+# Check for ALPN TLS extension support.
+TS_CHECK_CRYPTO_ALPN
+
+#
 # Check for openssl ASYNC jobs
 TS_CHECK_CRYPTO_ASYNC
 
-# Check for the client hello callback
-TS_CHECK_CRYPTO_HELLO_CB
+#
+# Check for EC key support.
+TS_CHECK_CRYPTO_EC_KEYS
 
+#
+# Check for the presense of the certificate callback in the ssl library
+TS_CHECK_CRYPTO_CERT_CB
+
+#
 # Check for SSL_set0_rbio call
 TS_CHECK_CRYPTO_SET_RBIO
 
 # Check for DH_get_2048_256
 TS_CHECK_CRYPTO_DH_GET_2048_256
-
-# Check for HKDF support
-TS_CHECK_CRYPTO_HKDF
-AM_CONDITIONAL([HAS_HKDF], [test "x$enable_hkdf" = "xyes"])
-
-# Check for TLS 1.3 support
-TS_CHECK_CRYPTO_TLS13
-
-# Check for QUIC support
-enable_quic=no
-AC_MSG_CHECKING([whether APIs for QUIC are available])
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <openssl/ssl.h>]],
-                                   [[
-                                     #ifdef OPENSSL_IS_BORINGSSL
-                                     SSL_QUIC_METHOD var;
-                                     #else
-                                     #ifndef SSL_MODE_QUIC_HACK
-                                     # error no hack for quic
-                                     #endif
-                                     #endif
-                                   ]])
-                  ],
-                  [AC_MSG_RESULT([yes]); enable_quic=yes],
-                  [AC_MSG_RESULT([no])])
-AM_CONDITIONAL([ENABLE_QUIC], [test "x$enable_quic" = "xyes"])
-TS_ARG_ENABLE_VAR([use], [quic])
-AC_SUBST(use_quic)
 
 # Check for OCSP
 TS_CHECK_CRYPTO_OCSP
@@ -1311,39 +1242,7 @@ AC_CHECK_FUNC([EVP_MD_CTX_reset], [],
 AC_CHECK_FUNC([EVP_MD_CTX_free], [],
               [AC_DEFINE([EVP_MD_CTX_free], [EVP_MD_CTX_destroy], [Renamed in OpenSSL 1.1])])
 
-AC_MSG_CHECKING([for OpenSSL is BoringSSL])
-AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <openssl/base.h>]],
-                                   [[
-                                     #ifndef OPENSSL_IS_BORINGSSL
-                                     # error not boringssl
-                                     #endif
-                                   ]])
-                  ],
-                  [AC_MSG_RESULT([yes]); openssl_is_boringssl=1],
-                  [AC_MSG_RESULT([no])])
-AM_CONDITIONAL([OPENSSL_IS_BORINGSSL], [test -n "$openssl_is_boringssl"])
-
 LIBS="$saved_LIBS"
-
-#
-# Check OpenSSL version for JA3 Fingerprint
-#
-AC_MSG_CHECKING([for JA3 compatible OpenSSL version])
-AC_EGREP_CPP(yes, [
-  #include <openssl/opensslv.h>
-  #if (OPENSSL_VERSION_NUMBER < 0x010100000L)
-  yes
-  #elif (OPENSSL_VERSION_NUMBER >= 0x010101000L)
-  yes
-  #endif
-  ], [
-    AC_MSG_RESULT(yes)
-    AS_IF([test "x${enable_experimental_plugins}" = "xyes"], [
-      enable_ja3_plugin=yes
-    ])
-  ], [AC_MSG_RESULT(no)])
-
-AM_CONDITIONAL([BUILD_JA3_PLUGIN], [test "x${enable_ja3_plugin}" = "xyes"])
 
 #
 # Check for zlib presence and usability
@@ -1353,8 +1252,28 @@ TS_CHECK_ZLIB
 # Check for lzma presence and usability
 TS_CHECK_LZMA
 
+#
+# Tcl macros provided by build/tcl.m4
+#
+# this will error out if tclConfig.sh is not found
+SC_PATH_TCLCONFIG
+
+# if tclConfig.sh loads properly, assume libraries are there and working
+SC_LOAD_TCLCONFIG
+
+# expect tclConfig.sh to populate TCL_LIB_FLAG and TCL_INCLUDE_SPEC
+if test "$host_os_def" == "darwin"; then
+    TCL_LIB_SPEC="-ltcl" # OSX fails to populate this variable
+fi
+AC_SUBST([LIBTCL],[$TCL_LIB_SPEC])
+
+
+if test "x${TCL_INCLUDE_SPEC}" != "x-I/usr/include"; then
+   TS_ADDTO(TS_INCLUDES, [$TCL_INCLUDE_SPEC])
+fi
+
 AC_CHECK_FUNCS([clock_gettime kqueue epoll_ctl posix_fadvise posix_madvise posix_fallocate inotify_init])
-AC_CHECK_FUNCS([port_create strlcpy strlcat sysconf sysctlbyname getpagesize])
+AC_CHECK_FUNCS([lrand48_r srand48_r port_create strlcpy strlcat sysconf sysctlbyname getpagesize])
 AC_CHECK_FUNCS([getreuid getresuid getresgid setreuid setresuid getpeereid getpeerucred])
 AC_CHECK_FUNCS([strsignal psignal psiginfo accept4])
 
@@ -1396,14 +1315,26 @@ TS_CHECK_LUAJIT
 # Enable experimental/uri_singing plugin
 # This is here, instead of above, because it needs to know if PCRE is available.
 #
+AC_CHECK_HEADERS([jansson.h], [
+  AC_MSG_CHECKING([whether jansson is dynamic])
+  TS_LINK_WITH_FLAGS_IFELSE([-fPIC -ljansson],[AC_LANG_PROGRAM(
+                            [#include <jansson.h>],
+                            [(void) json_object();])],
+                            [AC_MSG_RESULT([yes]); LIBJANSSON=-ljansson],
+                            [AC_MSG_RESULT([no]);  LIBJANSSON=-l:libjansson.a])
+  ],
+  [LIBJANSSON=])
 
-#### Check for optional jansson library (uri_signing)
-TS_CHECK_JANSSON
-
+AC_CHECK_HEADERS([cjose/cjose.h], [
+  AC_MSG_CHECKING([whether cjose is dynamic])
+  TS_LINK_WITH_FLAGS_IFELSE([-fPIC -lcjose],[AC_LANG_PROGRAM(
+                            [#include <cjose/cjose.h>],
+                            [(void) cjose_jws_import("", 0, NULL);])],
+                            [AC_MSG_RESULT([yes]); LIBCJOSE=-lcjose],
+                            [AC_MSG_RESULT([no]);  LIBCJOSE=-l:libcjose.a])
+  ],
+  [LIBCJOSE=])
 AC_CHECK_LIB([crypto],[HMAC],[has_libcrypto=1],[has_libcrypto=0])
-
-#### Check for optional cjose library (uri_signing)
-TS_CHECK_CJOSE
 
 AM_CONDITIONAL([BUILD_URI_SIGNING_PLUGIN], [test ! -z "${LIBCJOSE}" -a ! -z "${LIBJANSSON}" -a "x${enable_pcre}" = "xyes" -a "x${has_libcrypto}" = "x1"])
 AC_SUBST([LIBCJOSE])
@@ -1413,11 +1344,6 @@ AC_SUBST([LIBJANSSON])
 #
 TS_CHECK_YAML_CPP
 AM_CONDITIONAL([BUILD_YAML_CPP], [test x"$has_yaml_cpp" = x"no"])
-
-# Check for optional hiredis library
-TS_CHECK_HIREDIS
-
-AM_CONDITIONAL([BUILD_SSL_SESSION_REUSE_PLUGIN], [test ! -z "${LIB_HIREDIS}" -a "x${has_hiredis}" = "x1" ])
 
 # Check for backtrace() support
 has_backtrace=0
@@ -1922,12 +1848,10 @@ AC_LINK_IFELSE([
 ])
 
 # BSD-derived systems populate the socket length in the structure itself. It's
-# redundant to check all of these, but hey, I need the typing practice. Also, we
-# check for the linux updated version of tcp.h, in linux/tcp.h
+# redundant to check all of these, but hey, I need the typing practice.
 AC_CHECK_MEMBER([struct sockaddr.sa_len], [], [], [#include <netinet/in.h>])
 AC_CHECK_MEMBER([struct sockaddr_in.sin_len], [], [], [#include <netinet/in.h>])
 AC_CHECK_MEMBER([struct sockaddr_in6.sin6_len], [], [], [#include <netinet/in.h>])
-AC_CHECK_MEMBER([struct tcp_info.tcpi_data_segs_out], [], [], [#include <linux/tcp.h>])
 
 if test "x${ac_cv_member_struct_sockaddr_sa_len}" = "xyes"; then
     AC_DEFINE(HAVE_STRUCT_SOCKADDR_SA_LEN, 1,
@@ -1942,11 +1866,6 @@ fi
 if test "x${ac_cv_member_struct_sockaddr_in6_sin6_len}" = "xyes"; then
     AC_DEFINE(HAVE_STRUCT_SOCKADDR_IN6_SIN6_LEN, 1,
             [Whether struct sockaddr_in6 has the sin6_len member])
-fi
-
-if test "x${ac_cv_member_struct_tcp_info_tcpi_data_segs_out}" = "xyes"; then
-    AC_DEFINE(HAVE_STRUCT_LINUX_TCP_INFO, 1,
-            [Whether struct tcp_info have the tcpi_data_segs_{in,out} member])
 fi
 
 if test "x${with_profiler}" = "xyes"; then
@@ -2100,7 +2019,6 @@ AC_SUBST([default_stack_size], [$with_default_stack_size])
 iocore_include_dirs="\
 -I\$(abs_top_srcdir)/iocore/eventsystem \
 -I\$(abs_top_srcdir)/iocore/net \
--I\$(abs_top_srcdir)/iocore/net/quic \
 -I\$(abs_top_srcdir)/iocore/aio \
 -I\$(abs_top_srcdir)/iocore/hostdb \
 -I\$(abs_top_srcdir)/iocore/cache \
@@ -2139,9 +2057,6 @@ AC_CONFIG_FILES([
   doc/ext/local-config.py
   doc/uml/Makefile
   example/Makefile
-  example/plugins/Makefile
-  example/plugins/c-api/Makefile
-  example/plugins/cpp-api/Makefile
   include/Makefile
   include/ts/Makefile
   include/tscpp/api/Makefile
@@ -2153,7 +2068,6 @@ AC_CONFIG_FILES([
   iocore/eventsystem/Makefile
   iocore/hostdb/Makefile
   iocore/net/Makefile
-  iocore/net/quic/Makefile
   iocore/utils/Makefile
   lib/Makefile
   src/tscpp/api/Makefile
@@ -2162,6 +2076,7 @@ AC_CONFIG_FILES([
   lib/records/Makefile
   include/ts/apidefs.h
   include/tscore/ink_config.h
+  lib/tsconfig/Makefile
   src/wccp/Makefile
   lib/yamlcpp/Makefile
   mgmt/Makefile
@@ -2174,7 +2089,6 @@ AC_CONFIG_FILES([
   proxy/http/Makefile
   proxy/http/remap/Makefile
   proxy/http2/Makefile
-  proxy/http3/Makefile
   proxy/logging/Makefile
   proxy/shared/Makefile
   rc/Makefile
