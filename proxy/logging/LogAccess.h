@@ -248,6 +248,7 @@ public:
   inkcoreapi int marshal_client_http_connection_id(char *);  // INT
   inkcoreapi int marshal_client_http_transaction_id(char *); // INT
   inkcoreapi int marshal_cache_lookup_url_canon(char *);     // STR
+  inkcoreapi int marshal_client_sni_server_name(char *);     // STR
 
   // named fields from within a http header
   //
