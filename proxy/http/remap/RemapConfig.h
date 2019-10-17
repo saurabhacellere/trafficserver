@@ -40,6 +40,7 @@ class UrlRewrite;
 #define REMAP_OPTFLG_IN_IP 0x0080u            /* "in_ip=" option (used for ACL filtering)*/
 #define REMAP_OPTFLG_MAP_ID 0x0800u           /* associate a map ID with this rule */
 #define REMAP_OPTFLG_INVERT 0x80000000u       /* "invert" the rule (for src_ip at least) */
+#define REMAP_OPTFLG_STRATEGY 0x800000000u    /* "strategy=" the name of the nexthop selection strategy */
 #define REMAP_OPTFLG_ALL_FILTERS (REMAP_OPTFLG_METHOD | REMAP_OPTFLG_SRC_IP | REMAP_OPTFLG_ACTION | REMAP_OPTFLG_INTERNAL)
 
 struct BUILD_TABLE_INFO {

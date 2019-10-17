@@ -1,0 +1,166 @@
+# @file
+#
+#  Unit test data strategy.yaml file for testing the NextHopStrategyFactory
+#
+#  @section license License
+#
+#  Licensed to the Apache Software Foundation (ASF) under one
+#  or more contributor license agreements.  See the NOTICE file
+#  distributed with this work for additional information
+#  regarding copyright ownership.  The ASF licenses this file
+#  to you under the Apache License, Version 2.0 (the
+#  "License"); you may not use this file except in compliance
+#  with the License.  You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+#
+#  @section details Details
+#
+# 
+# unit test combined hosts and strategies, combined.yaml example
+#
+hosts:
+  p1: &p1 # shorthand name of host object, with an "anchor name"
+    host: p1.foo.com  # name or IP of host
+    hash_string: slsklslsk # optional hash string that replaces the hostname in consistent hashing.
+    protocol:
+      - http: 80
+      - https: 443
+    healthcheck:
+      url: tcp://192.168.1.1:80
+    future_stuff: "..."
+  p2: &p2
+    host: p2.foo.com
+    protocol:
+      - http: 80
+      - https: 443
+    healthcheck:
+      url: tcp://192.168.1.2:80
+    future_stuff: "..."
+  s1: &s1
+    host: s1.bar.com
+    protocol:
+      - http: 8080
+      - https: 8443
+    healthcheck:
+      url: tcp://192.168.2.1:80
+  s2: &s2
+    host: s2.bar.com
+    protocol:
+      - http: 8080
+      - https: 8443
+    healthcheck:
+      url: tcp://192.168.2.2:80
+groups:
+  - &g1
+    - <<: *p1
+      weight: 0.5
+    - <<: *p2
+      weight: 0.5
+  - &g2
+    - <<: *s1
+      weight: 2.0
+    - <<: *s2
+      weight: 1.0
+strategies:
+  - strategy: 'mid-tier-north'
+    policy: rr_ip # Selection strategy policy: Enum of 'consistent_hash' or 'first_live' or 'rr_strict' or 'rr_ip' or 'latched'
+    hash_key: hostname # optional key to use for Hashing. Enum of 'url' or 'uri' or 'hostname' or 'path' or 'path+query' or 'cache_key' or 'path+fragment'
+    go_direct: true # transactions may routed directly to the origin true/false default is true.
+    parent_is_proxy: false  # next hop hosts  are origin servers when set to 'false', defaults to true and indicates next hop hosts are ats cache's.
+    groups: # groups of hosts, these groups are used as rings in consistent hash and arrays of host groups for round_robin.
+      - *g1
+      - *g2
+    protocol: http # TODO - should this be named 'scheme' instead of 'protocol'? enumerated, 'http' or 'https'. by default uses the remapped protocol
+    failover: 
+      max_simple_retries: 2 # default is 1, indicates the maximum number of simple retries for the listed response codes.
+      ring_mode: exhaust_ring # enumerated as exhaust_ring or alternate_ring
+          #1) in 'exhaust_ring' mode all the servers in a ring are exhausted before failing over to secondary ring
+          #2) in 'alternate_ring' mode causes the failover to another server in secondary ring.
+      response_codes: # defines the responses codes for failover in exhaust_ring mode
+        - 404
+        - 502
+        - 503
+      health_check: # specifies the list of healthchecks that should be considered for failover. A list of enums: 'passive' or 'active'
+        - passive
+        - active
+  - strategy: 'mid-tier-south'
+    policy: latched
+    hash_key: uri 
+    go_direct: false 
+    parent_is_proxy: false  # next hop hosts  are origin servers
+    groups:
+      - *g1
+      - *g2
+    protocol: http 
+    failover: 
+      max_simple_retries: 2 
+      ring_mode: alternate_ring
+      response_codes:
+        - 404
+        - 502
+        - 503
+      health_check: 
+        - passive
+        - active
+  - strategy: 'mid-tier-east'
+    policy: first_live
+    hash_key: url 
+    go_direct: false 
+    parent_is_proxy: false  # next hop hosts  are origin servers
+    groups:
+      - *g1
+      - *g2
+    protocol: https 
+    failover: 
+      max_simple_retries: 2 
+      ring_mode: alternate_ring 
+      response_codes:
+        - 404
+        - 502
+        - 503
+      health_check:
+        - passive
+  - strategy: 'mid-tier-west'
+    policy: rr_strict
+    hash_key: luri 
+    go_direct: true 
+    parent_is_proxy: false  # next hop hosts  are origin servers
+    groups:
+      - *g1
+      - *g2
+    protocol: https 
+    failover: 
+      max_simple_retries: 2 
+      ring_mode: exhaust_ring 
+      response_codes:
+        - 404
+        - 502
+        - 503
+      health_check: 
+        - active
+  - strategy: 'mid-tier-midwest'
+    policy: consistent_hash
+    hash_key: cache_key 
+    go_direct: true 
+    parent_is_proxy: false  # next hop hosts  are origin servers
+    groups:
+      - *g1
+      - *g2
+    protocol: https 
+    failover: 
+      max_simple_retries: 2 
+      ring_mode: exhaust_ring 
+      response_codes:
+        - 404
+        - 502
+        - 503
+      health_check: 
+        - active
+
