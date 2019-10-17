@@ -52,7 +52,7 @@ Http2Stream::init(Http2StreamId sid, ssize_t initial_rwnd)
   this->_thread      = this_ethread();
   this->_client_rwnd = initial_rwnd;
 
-  _reader = request_reader = request_buffer.alloc_reader();
+  this->_reader = this->_request_buffer.alloc_reader();
   // FIXME: Are you sure? every "stream" needs request_header?
   _req_header.create(HTTP_TYPE_REQUEST);
   response_header.create(HTTP_TYPE_RESPONSE);
@@ -195,21 +195,32 @@ Http2Stream::send_request(Http2ConnectionState &cstate)
   do {
     bufindex             = 0;
     tmp                  = dumpoffset;
-    IOBufferBlock *block = request_buffer.get_current_block();
+    IOBufferBlock *block = this->_request_buffer.get_current_block();
     if (!block) {
-      request_buffer.add_block();
-      block = request_buffer.get_current_block();
+      this->_request_buffer.add_block();
+      block = this->_request_buffer.get_current_block();
     }
     done = _req_header.print(block->start(), block->write_avail(), &bufindex, &tmp);
     dumpoffset += bufindex;
-    request_buffer.fill(bufindex);
+    this->_request_buffer.fill(bufindex);
     if (!done) {
-      request_buffer.add_block();
+      this->_request_buffer.add_block();
     }
   } while (!done);
 
-  // Is there a read_vio request waiting?
-  this->update_read_request(INT64_MAX, true);
+  if (bufindex == 0) {
+    // No data to signal read event
+    return;
+  }
+
+  if (this->_state == Http2StreamState::HTTP2_STREAM_STATE_HALF_CLOSED_REMOTE ||
+      this->_state == Http2StreamState::HTTP2_STREAM_STATE_CLOSED) {
+    this->_signal_read_event(VC_EVENT_READ_COMPLETE);
+  } else {
+    // TODO: replace update_read_request() with this->_signal_read_event(VC_EVENT_READ_READY);
+    // Is there a read_vio request waiting?
+    this->update_read_request(INT64_MAX, true);
+  }
 }
 
 bool
@@ -523,43 +534,26 @@ Http2Stream::update_read_request(int64_t read_len, bool call_update, bool check_
   ink_release_assert(this->_thread == this_ethread());
 
   SCOPED_MUTEX_LOCK(lock, read_vio.mutex, this_ethread());
-  if (read_vio.nbytes > 0 && read_vio.ndone <= read_vio.nbytes) {
-    // If this vio has a different buffer, we must copy
-    ink_release_assert(this_ethread() == this->_thread);
-    if (read_vio.buffer.writer() != (&request_buffer)) {
-      int64_t num_to_read = read_vio.nbytes - read_vio.ndone;
-      if (num_to_read > read_len) {
-        num_to_read = read_len;
-      }
-      if (num_to_read > 0) {
-        int bytes_added = read_vio.buffer.writer()->write(request_reader, num_to_read);
-        if (bytes_added > 0 || (check_eos && recv_end_stream)) {
-          request_reader->consume(bytes_added);
-          read_vio.ndone += bytes_added;
-          int send_event = (read_vio.nbytes == read_vio.ndone || recv_end_stream) ? VC_EVENT_READ_COMPLETE : VC_EVENT_READ_READY;
-          if (call_update) { // Safe to call vio handler directly
-            inactive_timeout_at = Thread::get_hrtime() + inactive_timeout;
-            if (read_vio.cont && this->_sm) {
-              read_vio.cont->handleEvent(send_event, &read_vio);
-            }
-          } else { // Called from do_io_read.  Still setting things up.  Send event to handle this after the dust settles
-            read_event = send_tracked_event(read_event, send_event, &read_vio);
-          }
+  if (read_vio.nbytes > 0) {
+    // Try to be smart and only signal if there was additional data
+    int send_event = VC_EVENT_READ_READY;
+    if (this->_state == Http2StreamState::HTTP2_STREAM_STATE_HALF_CLOSED_REMOTE ||
+        this->_state == Http2StreamState::HTTP2_STREAM_STATE_CLOSED) {
+      send_event = VC_EVENT_READ_COMPLETE;
+    }
+
+    int64_t read_avail = this->read_vio.buffer.writer()->max_read_avail();
+    Http2StreamDebug("read_avail=%" PRId64, read_avail);
+
+    if (read_avail > 0 || send_event == VC_EVENT_READ_COMPLETE) {
+      if (call_update) { // Safe to call vio handler directly
+        inactive_timeout_at = Thread::get_hrtime() + inactive_timeout;
+        if (read_vio.cont && this->_sm) {
+          read_vio.cont->handleEvent(send_event, &read_vio);
         }
-      }
-    } else {
-      // Try to be smart and only signal if there was additional data
-      int send_event = (read_vio.nbytes == read_vio.ndone) ? VC_EVENT_READ_COMPLETE : VC_EVENT_READ_READY;
-      if (request_reader->read_avail() > 0 || send_event == VC_EVENT_READ_COMPLETE) {
-        if (call_update) { // Safe to call vio handler directly
-          inactive_timeout_at = Thread::get_hrtime() + inactive_timeout;
-          if (read_vio.cont && this->_sm) {
-            read_vio.cont->handleEvent(send_event, &read_vio);
-          }
-        } else { // Called from do_io_read.  Still setting things up.  Send event
-                 // to handle this after the dust settles
-          read_event = send_tracked_event(read_event, send_event, &read_vio);
-        }
+      } else { // Called from do_io_read.  Still setting things up.  Send event
+        // to handle this after the dust settles
+        read_event = send_tracked_event(read_event, send_event, &read_vio);
       }
     }
   }
@@ -688,6 +682,15 @@ Http2Stream::update_write_request(IOBufferReader *buf_reader, int64_t write_len,
 }
 
 void
+Http2Stream::_signal_read_event(int event)
+{
+  if (this->read_vio.cont) {
+    this->read_vio.cont->handleEvent(event, &this->read_vio);
+  }
+}
+
+// TODO: make this function private like _signal_read_event()
+void
 Http2Stream::signal_write_event(bool call_update)
 {
   if (this->write_vio.cont == nullptr || this->write_vio.op == VIO::NONE) {
@@ -811,7 +814,7 @@ Http2Stream::destroy()
   response_header.destroy();
 
   // Drop references to all buffer data
-  request_buffer.clear();
+  this->_request_buffer.clear();
 
   // Free the mutexes in the VIO
   read_vio.mutex.clear();

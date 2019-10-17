@@ -121,6 +121,7 @@ public:
   void update_initial_rwnd(Http2WindowSize new_size);
   bool has_trailing_header() const;
   void set_request_headers(HTTPHdr &h2_headers);
+  MIOBuffer *read_vio_writer() const;
 
   //////////////////
   // Variables
@@ -139,8 +140,6 @@ public:
 
   HTTPHdr response_header;
   IOBufferReader *response_reader          = nullptr;
-  IOBufferReader *request_reader           = nullptr;
-  MIOBuffer request_buffer                 = CLIENT_CONNECTION_FIRST_READ_BUFFER_SIZE_INDEX;
   Http2DependencyTree::Node *priority_node = nullptr;
 
 private:
@@ -149,6 +148,8 @@ private:
   bool response_is_data_available() const;
   Event *send_tracked_event(Event *event, int send_event, VIO *vio);
   void send_response_body(bool call_update);
+
+  void _signal_read_event(int event);
 
   /**
    * Check if this thread is the right thread to process events for this
@@ -164,6 +165,7 @@ private:
   int64_t _http_sm_id     = -1;
 
   HTTPHdr _req_header;
+  MIOBuffer _request_buffer = CLIENT_CONNECTION_FIRST_READ_BUFFER_SIZE_INDEX;
   VIO read_vio;
   VIO write_vio;
 
@@ -327,4 +329,10 @@ inline bool
 Http2Stream::is_first_transaction() const
 {
   return is_first_transaction_flag;
+}
+
+inline MIOBuffer *
+Http2Stream::read_vio_writer() const
+{
+  return this->read_vio.get_writer();
 }
