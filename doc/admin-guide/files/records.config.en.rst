@@ -1091,10 +1091,11 @@ mptcp
 .. ts:cv:: CONFIG proxy.config.http.request_buffer_enabled INT 0
    :overridable:
 
+   This is a configuration value that is overridable but not configurable. This is most likely an
+   implementation error.
+
    This enables buffering the content for incoming ``POST`` requests. If enabled no outbound
    connection is made until the entire ``POST`` request has been buffered.
-   If enabled, `proxy.config.http.post_copy_size` needs to be set to the maximum of the post body
-   size allowed, otherwise, the post would fail.
 
 .. ts:cv:: CONFIG proxy.config.http.request_line_max_size INT 65535
 
@@ -3916,15 +3917,6 @@ Plug-in Configuration
 .. ts:cv:: CONFIG proxy.config.plugin.plugin_dir STRING config/plugins
 
    Specifies the location of |TS| plugins.
-
-.. ts:cv:: CONFIG proxy.config.remap.num_remap_threads INT 0
-
-   When this variable is set to ``0``, plugin remap callbacks are
-   executed in line on network threads. If remap processing takes
-   significant time, this can be cause additional request latency.
-   Setting this variable to causes remap processing to take place
-   on a dedicated thread pool, freeing the network threads to service
-   additional requests.
 
 SOCKS Processor
 ===============
