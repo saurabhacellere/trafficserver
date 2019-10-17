@@ -1118,7 +1118,7 @@ HttpTransact::HandleRequest(State *s)
 {
   TxnDebug("http_trans", "START HttpTransact::HandleRequest");
 
-  if (!s->state_machine->is_waiting_for_full_body && !s->state_machine->is_using_post_buffer) {
+  if (!s->state_machine->is_waiting_for_full_body) {
     ink_assert(!s->hdr_info.server_request.valid());
 
     HTTP_INCREMENT_DYN_STAT(http_incoming_requests_stat);
@@ -2911,7 +2911,17 @@ HttpTransact::handle_cache_write_lock(State *s)
     s->request_sent_time      = UNDEFINED_TIME;
     s->response_received_time = UNDEFINED_TIME;
     s->cache_info.action      = CACHE_DO_LOOKUP;
-    remove_ims                = true;
+    if (!s->cache_info.object_read) {
+      ink_assert(s->cache_open_write_fail_action == HttpTransact::CACHE_WL_FAIL_ACTION_READ_RETRY);
+      s->cache_info.write_status = CACHE_WRITE_LOCK_MISS;
+      StateMachineAction_t next;
+      next           = SM_ACTION_CACHE_LOOKUP;
+      s->next_action = next;
+      s->hdr_info.server_request.destroy();
+      TRANSACT_RETURN(next, nullptr);
+      return;
+    }
+    remove_ims = true;
     SET_VIA_STRING(VIA_DETAIL_CACHE_TYPE, VIA_DETAIL_CACHE);
     break;
   case CACHE_WL_INIT:
