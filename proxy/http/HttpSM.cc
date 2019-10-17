@@ -3477,10 +3477,12 @@ HttpSM::tunnel_handler_post_ua(int event, HttpTunnelProducer *p)
     //   server and close the ua
     p->handler_state = HTTP_SM_POST_UA_FAIL;
     set_ua_abort(HttpTransact::ABORTED, event);
-    p->vc->do_io_write(nullptr, 0, nullptr);
-    p->vc->do_io_shutdown(IO_SHUTDOWN_READ);
+
     tunnel.chain_abort_all(p);
     server_session = nullptr;
+    p->read_vio    = nullptr;
+    p->vc->do_io_close(EHTTP_ERROR);
+
     // the in_tunnel status on both the ua & and
     //   it's consumer must already be set to true.  Previously
     //   we were setting it again to true but incorrectly in
@@ -7185,21 +7187,16 @@ HttpSM::set_next_state()
   }
 
   case HttpTransact::SM_ACTION_REMAP_REQUEST: {
-    if (!remapProcessor.using_separate_thread()) {
-      do_remap_request(true); /* run inline */
-      SMDebug("url_rewrite", "completed inline remapping request for [%" PRId64 "]", sm_id);
-      t_state.url_remap_success = remapProcessor.finish_remap(&t_state, m_remap);
-      if (t_state.next_action == HttpTransact::SM_ACTION_SEND_ERROR_CACHE_NOOP && t_state.transact_return_point == nullptr) {
-        // It appears that we can now set the next_action to error and transact_return_point to nullptr when
-        // going through do_remap_request presumably due to a plugin setting an error.  In that case, it seems
-        // that the error message has already been setup, so we can just return and avoid the further
-        // call_transact_and_set_next_state
-      } else {
-        call_transact_and_set_next_state(nullptr);
-      }
+    do_remap_request(true); /* run inline */
+    SMDebug("url_rewrite", "completed inline remapping request for [%" PRId64 "]", sm_id);
+    t_state.url_remap_success = remapProcessor.finish_remap(&t_state, m_remap);
+    if (t_state.next_action == HttpTransact::SM_ACTION_SEND_ERROR_CACHE_NOOP && t_state.transact_return_point == nullptr) {
+      // It appears that we can now set the next_action to error and transact_return_point to nullptr when
+      // going through do_remap_request presumably due to a plugin setting an error.  In that case, it seems
+      // that the error message has already been setup, so we can just return and avoid the further
+      // call_transact_and_set_next_state
     } else {
-      HTTP_SM_SET_DEFAULT_HANDLER(&HttpSM::state_remap_request);
-      do_remap_request(false); /* dont run inline (iow on another thread) */
+      call_transact_and_set_next_state(nullptr);
     }
     break;
   }
